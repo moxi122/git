@@ -16,3 +16,11 @@ streamlit
 streamlit_nested_layout
 pdfplumber
 pyperclip
+
+# HTTP 后端（api/）
+fastapi
+uvicorn
+python-multipart
+
+# 测试（tests/）
+pytest

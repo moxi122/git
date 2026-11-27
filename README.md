@@ -53,6 +53,32 @@ query
 关键参数都在 `.env` 里：`VECTOR_TOP_K`、`BM25_TOP_K`、`FINAL_TOP_N`、`RRF_K`。
 检索耗时会打在日志里（`混合检索：向量 x 条 + BM25 y 条 → 融合 z 条，用时 N ms`），方便做前后对比。
 
+## HTTP API 后端（FastAPI，异步）
+
+除了 Streamlit 界面，项目提供一层薄 HTTP 门面，`api/` 只做参数校验、调度和包装，业务逻辑仍复用 `src/assistant`，不存在第二套实现。
+
+```bash
+uvicorn api.main:app --host 127.0.0.1 --port 8010
+# 交互式文档：http://127.0.0.1:8010/docs
+```
+
+| 方法 | 路径 | 作用 | 关键字段 |
+|---|---|---|---|
+| GET | `/v1/health` | 存活探针（不碰模型，秒回） | `status` |
+| POST | `/v1/retrieve` | 单次混合检索，返回切片 | `query`、`top_k`(1–20) |
+| POST | `/v1/ask` | 跑完整条研究链路，返回答案 + 每步轨迹 | `question`、`max_queries`(1–10)、`enable_web_search` |
+| POST | `/v1/ask/stream` | 同上，SSE 逐节点推送 | 同上 |
+| POST | `/v1/ingest` | 上传文档入库（pdf/txt/md/csv，≤10MB） | `file` |
+
+约定与实现细节：
+
+- **统一错误结构**：`{"error": {"code", "message", "request_id"}}`，客户端只判断 `code`；常见码 `VALIDATION_ERROR`(422)、`NOT_FOUND`(404)、`ASK_TIMEOUT`(504)、`ASK_FAILED` / `RETRIEVE_FAILED` / `INGEST_FAILED`(502)、`FILE_TOO_LARGE`(413)。
+- **每个响应都带 `X-Request-ID`**，日志按同一 rid 串起来，排查线上问题时不用猜。
+- **阻塞操作全走线程池**：LangGraph 的 `graph.stream` 是同步迭代器，直接放在 async 路由里会卡死事件循环，所以用 `asyncio.to_thread`；SSE 用「工作线程 + `asyncio.Queue` + `call_soon_threadsafe`」回传事件，15s 没事件就发心跳注释帧。
+- **懒加载依赖**：`api/deps.py` 到调用时才 import `graph` / `retrieval`，所以启动服务不需要先加载 torch，也不需要先配好全部 key。
+- **单 worker 部署**：BM25 索引缓存在进程内存里，`--workers 1`；要横向扩容得把 BM25 缓存挪到共享存储。
+- **测试**：`pytest tests -q`，21 个用例覆盖正常 / 边界 / 异常路径，LLM 与向量库全部 fake 掉，不烧 token。
+
 ## 系统流程图
 
 系统的完整流程如下：
