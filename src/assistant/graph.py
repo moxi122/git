@@ -4,7 +4,7 @@ from langgraph.constants import Send
 from langgraph.graph import START, END, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 from src.assistant.configuration import Configuration
-from src.assistant.vector_db import get_or_create_vector_db
+from src.assistant.retrieval import hybrid_retrieve
 from src.assistant.state import ResearcherState, ResearcherStateInput, ResearcherStateOutput, QuerySearchState, QuerySearchStateInput, QuerySearchStateOutput
 from src.assistant.prompts import RESEARCH_QUERY_WRITER_PROMPT, RELEVANCE_EVALUATOR_PROMPT, SUMMARIZER_PROMPT, REPORT_WRITER_PROMPT
 from src.assistant.utils import format_documents_with_metadata, invoke_deepseek, invoke_llm, invoke_ollama, parse_output, tavily_search, Evaluation, Queries
@@ -99,12 +99,14 @@ def initiate_query_research(state: ResearcherState):
 # 读：state["query"]
 # 写：state["retrieved_documents"]
 def retrieve_rag_documents(state: QuerySearchState):
-    """从本地向量库检索文档（纯相似度 top-3，未做 rerank）。"""
+    """从本地知识库检索文档：BM25 + 向量混合召回，RRF 融合后取前 4 条。
+
+    具体参数（各路召回条数、融合保留条数）在 retrieval.py 里用环境变量控制，
+    这里只负责把 query 传进去，节点读写的 state 字段保持不变。
+    """
     print("--- Retrieving documents ---")
     query = state["query"]
-    vectorstore = get_or_create_vector_db()
-    vectorstore_retreiver = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
-    documents = vectorstore_retreiver.invoke(query)
+    documents = hybrid_retrieve(query)
 
     return {"retrieved_documents": documents}
 

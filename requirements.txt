@@ -6,6 +6,8 @@ langchain_text_splitters
 langchain_huggingface
 langchain_chroma
 chroma
+rank-bm25
+jieba
 unstructured
 python-dotenv
 tavily-python

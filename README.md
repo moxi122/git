@@ -31,6 +31,28 @@
 - **实时联网搜索** – 本地文档不足时，通过 **[Tavily API](https://tavily.com/)** 访问在线来源扩展研究。
 - **结构化报告生成** – 依据你预设的报告模板产出格式规范的报告。
 
+## **混合检索（BM25 + 向量 + RRF 融合）**
+
+本地知识库的召回不是单纯走向量，而是两路召回后融合：
+
+```
+query
+ ├─ 向量召回：千问 text-embedding-v3（DashScope OpenAI 兼容端点）+ Chroma   top 15
+ ├─ 关键词召回：jieba 分词 + BM25Okapi                                      top 15
+ ├─ RRF 融合：score = Σ 1/(60 + 名次)                                        → top 4
+ └─ 交给下游的“相关性判定 → 摘要”
+```
+
+几个设计点：
+
+- **BM25 语料直接取自 Chroma**，不单独维护索引文件，避免"向量库更新了、关键词索引还是旧的"。
+- **中文必须分词**：jieba 切开后再统计词频，否则 BM25 会退化成按单字匹配。
+- **用 RRF 而不是分数加权**：余弦距离和 BM25 分数不同量纲，加权要反复调参；RRF 只看名次，换模型、换语料都不用重调。
+- **可一键降级**：`HYBRID_ENABLED=false` 时退回纯向量检索，行为和改造前完全一致。
+
+关键参数都在 `.env` 里：`VECTOR_TOP_K`、`BM25_TOP_K`、`FINAL_TOP_N`、`RRF_K`。
+检索耗时会打在日志里（`混合检索：向量 x 条 + BM25 y 条 → 融合 z 条，用时 N ms`），方便做前后对比。
+
 ## 系统流程图
 
 系统的完整流程如下：
@@ -44,6 +66,8 @@
 - **[Ollama](https://ollama.com/)**：本地运行 DeepSeek R1 模型。
 - **[LangGraph](https://www.langchain.com/langgraph)**：构建 AI 代理并定义研究员的工作流。
 - **[ChromaDB](https://docs.trychroma.com/)**：用于 RAG 检索的本地向量数据库。
+- **[千问 text-embedding-v3](https://help.aliyun.com/zh/model-studio/)**：知识库向量化（DashScope OpenAI 兼容端点）。
+- **[rank-bm25](https://github.com/dorianbrown/rank_bm25) + jieba**：关键词召回与中文分词。
 - **[Streamlit](https://docs.streamlit.io/)**：提供与研究员交互的界面。
 - **[Tavily](https://tavily.com/)**：用于联网搜索。
 
@@ -160,10 +184,13 @@ langgraph dev
 - **新增 `.env` 与 `.gitignore`**：密钥不进版本库。
 - **原文里的 `assistant/graph.py` 实际路径是 `src/assistant/graph.py`**，译文已按真实路径修正。
 - **英文原版保留在 `README.en.md`**，方便对照。
+- **检索层升级为混合召回（BM25 + 向量 + RRF）**：新增 `src/assistant/retrieval.py`，`retrieve_rag_documents` 节点改为调用 `hybrid_retrieve()`；BM25 语料直接从 Chroma 读取，入库后自动失效重建。
+- **embedding 换成千问 `text-embedding-v3`**：走 DashScope 的 OpenAI 兼容端点（`QWEN_API_KEY`），不再依赖本地 HuggingFace 模型。
+- **切块方式改为中文友好的定长切分**：原 `SemanticChunker` 会对每个句子调一次 embedding，换成 API 后请求量不可接受，改为 `RecursiveCharacterTextSplitter`（按 `。！？；` 断句，800 字 / 150 重叠，可用 `CHUNK_SIZE`、`CHUNK_OVERLAP` 调整）。
 
-还没打通的三处（与 LLM 无关，属环境准备）：
+还没打通的地方（与 LLM 无关，属环境准备）：
 
 1. `./files` 目录不存在，首次建库会卡在 `DirectoryLoader("./files")`
 2. `unstructured` 未安装（`requirements.txt` 里列了但没装上），`DirectoryLoader` 默认加载器依赖它
-3. 首次建库需下载 `all-MiniLM-L6-v2` 嵌入模型（约 90MB）
+3. 首次建库需要配置千问 API Key；向量维度由 `text-embedding-v3` 决定，换模型必须删掉 `database/` 重建
 
