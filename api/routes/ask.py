@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from api.config import ask_timeout
+from api.config import ask_timeout, default_enable_web_search
 from api.deps import get_graph
 from api.errors import AppError
 from api.schemas import AskRequest, AskResponse, StepOut
@@ -14,16 +14,27 @@ from api.schemas import AskRequest, AskResponse, StepOut
 router = APIRouter(tags=["research"])
 
 
+def _web_enabled(request: AskRequest) -> bool:
+    """显式传了就用调用方的值；没传就按服务端有没有可用的 Tavily key 决定。"""
+    if request.enable_web_search is not None:
+        return request.enable_web_search
+    return default_enable_web_search()
+
+
 def _run_graph(graph, request: AskRequest):
     """同步跑完整条 LangGraph，收集节点名 + 截断后的增量。"""
-    initial_state = {
-        "question": request.question,
-        "max_queries": request.max_queries,
-        "enable_web_search": request.enable_web_search,
+    # 主图 state 只认 user_instructions；max_queries / enable_web_search 属于运行配置，
+    # 必须放进 config["configurable"]，混进初始 state 会被入口 schema 直接拒绝
+    initial_state = {"user_instructions": request.question}
+    config = {
+        "configurable": {
+            "max_search_queries": request.max_queries,
+            "enable_web_search": _web_enabled(request),
+        }
     }
     steps: list[dict] = []
     answer = ""
-    for chunk in graph.stream(initial_state):
+    for chunk in graph.stream(initial_state, config=config):
         for node, value in chunk.items():
             steps.append({"node": node, "payload": str(value)[:500]})
             if node == "generate_final_answer" and isinstance(value, dict):
@@ -66,12 +77,14 @@ async def ask_stream(request: AskRequest, graph=Depends(get_graph)):
 
     def worker() -> None:
         try:
-            initial_state = {
-                "question": request.question,
-                "max_queries": request.max_queries,
-                "enable_web_search": request.enable_web_search,
+            initial_state = {"user_instructions": request.question}
+            config = {
+                "configurable": {
+                    "max_search_queries": request.max_queries,
+                    "enable_web_search": _web_enabled(request),
+                }
             }
-            for chunk in graph.stream(initial_state):
+            for chunk in graph.stream(initial_state, config=config):
                 loop.call_soon_threadsafe(queue.put_nowait, ("node", chunk))
         except Exception as exc:  # 错误也要通过流告诉客户端，而不是 200 后静默断开
             loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))

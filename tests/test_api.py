@@ -216,3 +216,69 @@ def test_unknown_route_returns_structured_404(client):
     body = resp.json()
     assert body["error"]["code"] == "NOT_FOUND"
     assert body["error"]["request_id"]
+
+
+# ---------- /ask 契约与网页默认值 ----------
+
+class RecordingGraph:
+    """记录 /ask 实际传给图的 state 和 config，用来回归 BUG-01 这类契约错位。"""
+
+    def __init__(self):
+        self.states = []
+        self.configs = []
+
+    def stream(self, state, config=None):
+        self.states.append(dict(state))
+        self.configs.append(config)
+        yield {"generate_final_answer": {"final_answer": "契约测试报告"}}
+
+
+def _client_with_recording_graph():
+    graph = RecordingGraph()
+    app = create_app()
+    app.dependency_overrides[get_graph] = lambda: graph
+    return TestClient(app), graph
+
+
+def test_ask_state_and_config_match_graph_contract(monkeypatch):
+    """初始 state 只能有 user_instructions；max_queries 必须走 config。"""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-" + "x" * 40)
+    client, graph = _client_with_recording_graph()
+    with client:
+        resp = client.post("/v1/ask", json={"question": "契约测试", "max_queries": 4})
+    assert resp.status_code == 200
+    assert set(graph.states[0]) == {"user_instructions"}
+    assert graph.configs[0]["configurable"]["max_search_queries"] == 4
+
+
+def test_ask_defaults_web_off_when_tavily_key_missing(monkeypatch):
+    """没有 Tavily key 时，不传 enable_web_search 应默认关闭网页兜底。"""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    client, graph = _client_with_recording_graph()
+    with client:
+        resp = client.post("/v1/ask", json={"question": "网页默认值"})
+    assert resp.status_code == 200
+    assert graph.configs[0]["configurable"]["enable_web_search"] is False
+
+
+def test_ask_defaults_web_on_when_tavily_key_present(monkeypatch):
+    """key 有效时恢复默认开启，避免为了缺 key 的场景牺牲正常能力。"""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-" + "x" * 40)
+    client, graph = _client_with_recording_graph()
+    with client:
+        resp = client.post("/v1/ask", json={"question": "网页默认值"})
+    assert resp.status_code == 200
+    assert graph.configs[0]["configurable"]["enable_web_search"] is True
+
+
+def test_ask_explicit_web_true_still_attempted_without_key(monkeypatch):
+    """调用方显式要网页时仍按 true 下发，由下游决定成败，不被服务端悄悄改写。"""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    client, graph = _client_with_recording_graph()
+    with client:
+        resp = client.post(
+            "/v1/ask",
+            json={"question": "显式网页", "enable_web_search": True},
+        )
+    assert resp.status_code == 200
+    assert graph.configs[0]["configurable"]["enable_web_search"] is True

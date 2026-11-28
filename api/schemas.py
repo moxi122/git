@@ -30,7 +30,10 @@ class RetrieveResponse(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(..., max_length=5000, description="研究问题")
     max_queries: int = Field(5, ge=1, le=10, description="最多拆出多少条子查询")
-    enable_web_search: bool = Field(True, description="是否允许 Tavily 网页兜底")
+    enable_web_search: bool | None = Field(
+        None,
+        description="是否允许 Tavily 网页兜底；不传则按服务端是否配置有效 key 决定",
+    )
 
     @field_validator("question")
     @classmethod

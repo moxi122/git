@@ -117,6 +117,10 @@ def invoke_deepseek(model, system_prompt, user_prompt, output_format=None, tempe
     """
     from langchain_openai import ChatOpenAI
 
+    # 允许 .env 覆盖模型名：切到百炼托管的 deepseek-v4.1-flash 时，graph.py 里的
+    # 调用点不用改；不配这个变量就仍用调用方传进来的模型名（保持原行为）
+    model = os.getenv("DEEPSEEK_MODEL") or model
+
     llm_kwargs = {
         "model": model,
         "api_key": os.getenv("DEEPSEEK_API_KEY"),

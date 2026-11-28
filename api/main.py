@@ -12,8 +12,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from dotenv import load_dotenv
 
-from api.config import cors_origins
+# 加载项目根目录的 .env：README 让直接用 uvicorn 启动，不加载的话
+# DEEPSEEK_API_KEY / ASK_TIMEOUT_SEC 这些配置在 API 进程里全是空值
+load_dotenv()
+
+from api.config import cors_origins, web_search_available
 from api.errors import AppError, error_body
 from api.routes import ask, health, ingest, retrieve
 
@@ -95,6 +100,14 @@ def create_app() -> FastAPI:
     app.include_router(retrieve.router, prefix="/v1")
     app.include_router(ask.router, prefix="/v1")
     app.include_router(ingest.router, prefix="/v1")
+
+    # 启动自检：Tavily key 缺失/像占位符时，/ask 不传 enable_web_search 就默认关闭兜底，
+    # 避免默认请求在检索落空时被一个无效 key 拖成 502；显式传 true 仍然会尝试
+    if not web_search_available():
+        logger.warning(
+            "TAVILY_API_KEY 未配置或明显无效：enable_web_search 默认关闭，"
+            "调用方显式传 true 时才会尝试网页兜底"
+        )
 
     return app
 
